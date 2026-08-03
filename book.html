@@ -1,0 +1,1677 @@
+<!--
+  ============================================================================
+  GENERIC BOOKING WIDGET — tenant-universal, zero brand strings in this file
+  ============================================================================
+  Identical bytes on every site. All brand values (logo, business name, colour,
+  support email, timezone) are pulled at runtime from getBookingConfig() →
+  Brand-Config-DB, so the same file reskins itself per tenant. If the config
+  endpoint is unreachable it degrades to neutral defaults.
+
+  Self-contained HTML/CSS/JS. Paste into an Elementor HTML widget on
+  the brand's booking page (e.g. /book-a-callback/).
+
+  Talks to Digital Landlord Controller via six POST actions:
+    - getAvailableSlots       → 14-day grid of 30-min windows in user's local TZ
+    - bookCall        → creates GCal event + Meet link, sends invite
+    - getBookingDetails       → fetches existing booking (for reschedule/cancel)
+    - rescheduleBooking  → deletes old event, creates new at chosen slot
+    - cancelBooking      → deletes event + cancels reminder triggers
+
+  URL params trigger the reschedule/cancel modes:
+    /book-a-callback/?r=TOKEN&e=EVENT_ID   → reschedule flow
+    /book-a-callback/?c=TOKEN&e=EVENT_ID   → cancel flow
+  Both tokens are HMAC-derived from event_id + email + RESCHEDULE_SECRET on
+  the controller side. Links are auto-embedded in the lead's email + calendar
+  invite description by sendBookingConfirmationEmail_ + buildReminderEmailBody_.
+
+  ── CONFIG ─────────────────────────────────────────────────────────────────
+  Fill in CONFIG.endpoint + CONFIG.authToken below.
+
+  SECURITY NOTE:
+    Embedding the AUTH_TOKEN in browser JS means anyone can scrape it from
+    page source and hit the controller directly. Acceptable for pilot launch
+    (mitigations: backend rate-limits, anti-abuse window, manual review).
+    RECOMMENDED: leave CONFIG.endpoint as the /wp-json/custom/v1 proxy base and
+    CONFIG.authToken blank — the WP booking-proxy snippet injects the token
+    server-side so it never reaches the browser.
+
+  ── DEPLOYMENT ──────────────────────────────────────────────────────────────
+  1. Paste this entire file into an Elementor → HTML widget on the booking page.
+  2. Nothing to edit — logo, business name, colour, support email and timezone
+     all arrive at runtime from get-booking-config (Brand-Config-DB).
+  3. Make sure the brand's booking proxy exposes the /get-booking-config route.
+  4. Publish + test in incognito.
+
+  Stepped flow:
+    Step 1 — Timezone (auto-detected, dropdown to change)
+    Step 2 — Date (next ~14 days, weekdays only, grid)
+    Step 3 — Time (30-min slots for selected date)
+    Step 4 — Details (name, email, phone optional, notes optional)
+    Step 5 — Confirmed (Meet link + add-to-calendar buttons)
+  ============================================================================
+-->
+
+<style>
+/* ────────────────────────────────────────────────────────────────────────
+   BRAND TOKENS — generic. Every brand value comes from getBookingConfig()
+   → Brand-Config-DB at runtime (applyBrand_); the literals below are neutral
+   fallbacks used only if the config endpoint is unreachable.
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-booking-widget {
+  --brand: #2C6E7F;
+  --brand-soft: #224F5C;
+  --brand-tint: #EAF1F3;
+  --brand-mid: #7FB0BC;
+  --brand-pale: #C5DDE3;
+  --brand-glow: rgba(44,110,127,.18);
+  --ink: #1A1B1F;
+  --ink-soft: #4A4D55;
+  --ink-mute: #7A7E88;
+  --cream: #FAF7F0;
+  --line: #E5E1D5;
+  --line-soft: #F0EBDE;
+  --accent-blue: #00A6F9;
+  --accent-teal: var(--brand);
+  --accent-mint: var(--brand-mid);
+  --error: #C2410C;
+  --success: #15803D;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --shadow-sm: 0 1px 2px rgba(26,27,31,.06);
+  --shadow-md: 0 8px 24px rgba(49,29,63,.08);
+  --shadow-lg: 0 20px 60px rgba(49,29,63,.12);
+
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: var(--ink);
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.bkw-booking-widget * { box-sizing: border-box; }
+.bkw-booking-widget button { font-family: inherit; cursor: pointer; }
+.bkw-booking-widget input,
+.bkw-booking-widget select,
+.bkw-booking-widget textarea { font-family: inherit; font-size: 15px; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   CARD CHASSIS
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-card {
+  background: #FFFFFF;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  position: relative;
+}
+
+.bkw-card-header {
+  background: var(--brand-tint);
+  color: #14343A;
+  padding: 22px 32px 20px;
+  position: relative;
+  text-align: center;
+  border-bottom: 1px solid rgba(53,54,22,0.08);
+}
+.bkw-card-header::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--brand) 0%, var(--brand-mid) 50%, var(--brand-pale) 100%);
+}
+.bkw-card-header h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.bkw-card-header p {
+  margin: 0;
+  font-size: 14px;
+  opacity: .82;
+  font-weight: 300;
+}
+.bkw-card-logo {
+  height: 56px !important;
+  width: auto !important;
+  max-width: 220px !important;
+  margin: 0 auto 10px !important;
+  display: block !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.bkw-card-body {
+  padding: 28px 32px 32px;
+  background: #FFFFFF;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   STEP INDICATOR
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-steps {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.bkw-step-dot {
+  flex: 1;
+  height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  transition: background .25s ease;
+}
+.bkw-step-dot.active {
+  background: linear-gradient(90deg, var(--brand), var(--brand-mid));
+}
+.bkw-step-dot.done {
+  background: var(--accent-teal);
+}
+
+.bkw-step-label {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-mute);
+  margin-bottom: 8px;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   PANELS (one per step)
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-panel {
+  display: none;
+  animation: panelIn .28s ease;
+}
+.bkw-panel.active { display: block; }
+
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.bkw-panel h2 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  letter-spacing: -0.015em;
+  color: var(--brand);
+}
+.bkw-panel p.bkw-sub {
+  font-size: 14px;
+  color: var(--ink-soft);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   TIMEZONE PANEL
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-tz-detected {
+  background: var(--cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.bkw-tz-detected-icon {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand), var(--brand-mid));
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #FFF; font-size: 18px;
+}
+.bkw-tz-detected-text { flex: 1; min-width: 0; }
+.bkw-tz-detected-text .small {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-mute);
+}
+.bkw-tz-detected-text .big {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.bkw-tz-change {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #FFFFFF;
+  font-size: 14px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color .2s ease;
+}
+.bkw-tz-change:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; border-color: var(--accent-teal); }
+
+/* ────────────────────────────────────────────────────────────────────────
+   DATE GRID
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-date-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.bkw-date-tile {
+  background: #FFFFFF;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 14px 8px 12px;
+  text-align: center;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.bkw-date-tile:hover { border-color: var(--brand); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.bkw-date-tile.selected {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #FFFFFF;
+  box-shadow: var(--shadow-md);
+}
+.bkw-date-tile-dow {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 2px;
+}
+.bkw-date-tile.selected .bkw-date-tile-dow { color: rgba(255,255,255,.7); }
+.bkw-date-tile-day {
+  display: block;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.bkw-date-tile-mon {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-mute);
+  margin-top: 2px;
+}
+.bkw-date-tile.selected .bkw-date-tile-mon { color: rgba(255,255,255,.7); }
+
+/* ────────────────────────────────────────────────────────────────────────
+   TIME GRID
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-time-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.bkw-time-tile {
+  background: #FFFFFF;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px 8px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.bkw-time-tile:hover { border-color: var(--brand); transform: translateY(-1px); }
+.bkw-time-tile.selected {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #FFFFFF;
+}
+.bkw-time-tz-note {
+  font-size: 12px;
+  color: var(--ink-mute);
+  margin-bottom: 14px;
+  font-style: italic;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   DETAILS FORM
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-form-group {
+  margin-bottom: 16px;
+}
+.bkw-form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 6px;
+}
+.bkw-form-group label .bkw-optional {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink-mute);
+  margin-left: 4px;
+  font-size: 11px;
+}
+.bkw-form-group input,
+.bkw-form-group textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #FFFFFF;
+  color: var(--ink);
+  transition: border-color .15s ease;
+}
+.bkw-form-group input:focus,
+.bkw-form-group textarea:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-glow);
+}
+.bkw-form-group textarea { min-height: 80px; resize: vertical; }
+.bkw-form-error {
+  display: none;
+  font-size: 12px;
+  color: var(--error);
+  margin-top: 4px;
+}
+.bkw-form-group.has-error input,
+.bkw-form-group.has-error textarea { border-color: var(--error); }
+.bkw-form-group.has-error .bkw-form-error { display: block; }
+
+.bkw-summary-box {
+  background: var(--cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+.bkw-summary-box .bkw-summary-eyebrow {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-mute);
+  margin-bottom: 4px;
+}
+.bkw-summary-box .bkw-summary-when {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--brand);
+  margin-bottom: 2px;
+}
+.bkw-summary-box .bkw-summary-also {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   ACTIONS / BUTTONS
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 24px;
+  align-items: center;
+}
+.bkw-actions .bkw-spacer { flex: 1; }
+
+.bkw-btn {
+  padding: 13px 24px;
+  border-radius: var(--radius-md);
+  border: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  transition: all .15s ease;
+}
+.bkw-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.bkw-btn-primary {
+  background: var(--brand) !important;
+  color: var(--brand-tint) !important;
+  border: 2px solid var(--brand) !important;
+  padding: 11px 22px !important;
+}
+.bkw-btn-primary:hover:not(:disabled) {
+  background: var(--brand-tint) !important;
+  color: var(--brand) !important;
+  border: 2px solid var(--brand) !important;
+  padding: 11px 22px !important;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.bkw-btn-secondary {
+  background: transparent;
+  color: var(--ink-soft);
+}
+.bkw-btn-secondary:hover { color: var(--brand); }
+
+.bkw-btn-danger {
+  background: var(--error);
+  color: #FFFFFF;
+}
+.bkw-btn-danger:hover:not(:disabled) {
+  background: #A03408;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.bkw-reschedule-banner {
+  background: linear-gradient(135deg, rgba(188,209,202,.25), rgba(207,193,167,.25));
+  border: 1px solid var(--brand-pale);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin-bottom: 18px;
+}
+.bkw-rb-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--brand);
+  margin-bottom: 4px;
+}
+.bkw-rb-body {
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.bkw-rb-body strong { color: var(--brand); }
+
+/* ────────────────────────────────────────────────────────────────────────
+   CONFIRMATION PANEL
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-confirm-icon {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand), var(--brand-mid));
+  margin: 0 auto 18px;
+  display: flex; align-items: center; justify-content: center;
+  color: #FFFFFF;
+  font-size: 32px;
+  box-shadow: 0 8px 24px rgba(0,208,199,.3);
+}
+.bkw-confirm-center { text-align: center; }
+.bkw-confirm-center h2 { margin-bottom: 10px; }
+.bkw-confirm-center p.bkw-sub { margin-bottom: 22px; }
+
+.bkw-confirm-when {
+  background: var(--cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  margin-bottom: 22px;
+  text-align: left;
+}
+.bkw-confirm-when .row {
+  display: flex;
+  padding: 6px 0;
+  font-size: 14px;
+}
+.bkw-confirm-when .row .label {
+  flex: 0 0 92px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-mute);
+  padding-top: 1px;
+}
+.bkw-confirm-when .row .value { flex: 1; color: var(--ink); font-weight: 500; }
+
+.bkw-meet-btn {
+  display: block !important;
+  text-align: center !important;
+  background: var(--brand) !important;
+  color: var(--brand-tint) !important;
+  padding: 14px 20px !important;
+  border: 2px solid var(--brand) !important;
+  border-radius: var(--radius-md) !important;
+  text-decoration: none !important;
+  font-weight: 600 !important;
+  margin-bottom: 16px !important;
+  transition: all .15s ease !important;
+}
+.bkw-meet-btn:hover {
+  background: var(--brand-tint) !important;
+  color: var(--brand) !important;
+  border-color: var(--brand) !important;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.bkw-addcal-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.bkw-addcal-btn {
+  flex: 1;
+  min-width: 130px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #FFFFFF;
+  color: var(--ink-soft);
+  font-size: 13px;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all .15s ease;
+}
+.bkw-addcal-btn:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.bkw-confirm-expect {
+  background: #FFFFFF;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  text-align: left;
+  margin-bottom: 8px;
+}
+.bkw-confirm-expect h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  font-weight: 600;
+}
+.bkw-confirm-expect ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   LOADING OVERLAY — full-card spinner shown during book / reschedule / cancel
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.93);
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 10;
+}
+.bkw-loading-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.bkw-loading-card {
+  text-align: center;
+  padding: 30px 32px;
+  max-width: 360px;
+}
+.bkw-loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid var(--line);
+  border-top-color: var(--accent-teal);
+  border-right-color: var(--accent-mint);
+  border-radius: 50%;
+  margin: 0 auto 18px;
+  animation: spin 0.8s linear infinite;
+}
+.bkw-loading-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--brand);
+  margin-bottom: 8px;
+}
+.bkw-loading-subtitle {
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.bkw-card { position: relative; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   STATES — LOADING / ERROR / EMPTY
+   ──────────────────────────────────────────────────────────────────────── */
+.bkw-loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--ink-mute);
+}
+.bkw-loading .spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent-teal);
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.bkw-error-box {
+  background: #FEF2EF;
+  border: 1px solid #F8C5B0;
+  color: var(--error);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  font-size: 14px;
+  margin-bottom: 16px;
+  display: none;
+}
+.bkw-error-box.visible { display: block; }
+
+.bkw-empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--ink-mute);
+  font-size: 14px;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   RESPONSIVE
+   ──────────────────────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .bkw-card-header { padding: 22px 22px 18px; }
+  .bkw-card-header h1 { font-size: 19px; }
+  .bkw-card-body { padding: 22px; }
+  .bkw-panel h2 { font-size: 20px; }
+  .bkw-date-grid { grid-template-columns: repeat(auto-fill, minmax(82px, 1fr)); gap: 8px; }
+  .bkw-time-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+}
+</style>
+
+<div class="bkw-booking-widget">
+  <div class="bkw-card">
+    <div class="bkw-card-header">
+      <img class="bkw-card-logo" id="bkwLogo" alt="" style="display:none;background:var(--brand-tint);padding:6px 14px;border-radius:6px;">
+      <h1 id="bkwWidgetTitle">Book a Call</h1>
+      <p id="bkwWidgetSubtitle">A quick chat at a time that suits — no pressure.</p>
+    </div>
+    <div class="bkw-card-body">
+
+      <!-- Step indicator -->
+      <div class="bkw-steps" id="bkwSteps">
+        <div class="bkw-step-dot active"></div>
+        <div class="bkw-step-dot"></div>
+        <div class="bkw-step-dot"></div>
+        <div class="bkw-step-dot"></div>
+      </div>
+
+      <!-- Reschedule banner (hidden by default) -->
+      <div class="bkw-reschedule-banner" id="bkwRescheduleBanner" style="display:none;">
+        <div class="bkw-rb-eyebrow">Rescheduling</div>
+        <div class="bkw-rb-body">
+          Your call is currently booked for <strong id="bkwRbCurrentTime">—</strong>.
+          Pick a new time below — your old slot will be released automatically.
+        </div>
+      </div>
+
+      <!-- Global error box -->
+      <div class="bkw-error-box" id="bkwError"></div>
+
+      <!-- ───────────── PANEL 1 — Timezone ───────────── -->
+      <div class="bkw-panel active" data-panel="tz">
+        <div class="bkw-step-label">Step 1 of 4</div>
+        <h2>What time zone are you in?</h2>
+        <p class="bkw-sub">We'll show you slots in your local time. You can change this if we got it wrong.</p>
+
+        <div class="bkw-tz-detected">
+          <div class="bkw-tz-detected-icon">⏱</div>
+          <div class="bkw-tz-detected-text">
+            <div class="small">We detected</div>
+            <div class="big" id="bkwTzDetectedLabel">—</div>
+          </div>
+        </div>
+
+        <select class="bkw-tz-change" id="bkwTzSelect" aria-label="Change time zone">
+          <option value="Australia/Sydney">Sydney / Melbourne / Hobart / Canberra (AEST/AEDT)</option>
+          <option value="Australia/Brisbane">Brisbane / QLD (AEST — no daylight saving)</option>
+          <option value="Australia/Adelaide">Adelaide / SA (ACST/ACDT)</option>
+          <option value="Australia/Darwin">Darwin / NT (ACST)</option>
+          <option value="Australia/Perth">Perth / WA (AWST)</option>
+          <option value="Pacific/Auckland">Auckland / NZ (NZST/NZDT)</option>
+        </select>
+
+        <div class="bkw-actions">
+          <div class="bkw-spacer"></div>
+          <button class="bkw-btn bkw-btn-primary" data-action="goto-date">See available times →</button>
+        </div>
+      </div>
+
+      <!-- ───────────── PANEL 2 — Date ───────────── -->
+      <div class="bkw-panel" data-panel="date">
+        <div class="bkw-step-label">Step 2 of 4</div>
+        <h2>Pick a day that works</h2>
+        <p class="bkw-sub">Showing the next 14 days. Times shown will be in <span id="bkwTzLabelDate">your local time</span>.</p>
+
+        <div id="bkwDatePanelLoading" class="bkw-loading">
+          <div class="spinner"></div>
+          Loading available days…
+        </div>
+        <div id="bkwDateGrid" class="bkw-date-grid" style="display:none;"></div>
+        <div id="bkwDateEmpty" class="bkw-empty-state" style="display:none;">
+          No openings in the next 14 days. <span id="bkwEmptyContact">Please get in touch and we'll find a time.</span>
+        </div>
+
+        <div class="bkw-actions">
+          <button class="bkw-btn bkw-btn-secondary" data-action="goto-tz">← Back</button>
+          <div class="bkw-spacer"></div>
+        </div>
+      </div>
+
+      <!-- ───────────── PANEL 3 — Time ───────────── -->
+      <div class="bkw-panel" data-panel="time">
+        <div class="bkw-step-label">Step 3 of 4</div>
+        <h2 id="bkwTimeHeading">Pick a time</h2>
+        <p class="bkw-sub bkw-time-tz-note" id="bkwTimeTzNote">Times shown in your local time zone.</p>
+
+        <div id="bkwTimeGrid" class="bkw-time-grid"></div>
+
+        <div class="bkw-actions">
+          <button class="bkw-btn bkw-btn-secondary" data-action="goto-date">← Back to days</button>
+          <div class="bkw-spacer"></div>
+        </div>
+      </div>
+
+      <!-- ───────────── PANEL 4 — Details ───────────── -->
+      <div class="bkw-panel" data-panel="details">
+        <div class="bkw-step-label">Step 4 of 4</div>
+        <h2>Your details</h2>
+        <p class="bkw-sub">Just the basics so we can send your confirmation.</p>
+
+        <div class="bkw-summary-box">
+          <div class="bkw-summary-eyebrow">You're booking</div>
+          <div class="bkw-summary-when" id="bkwSummaryWhen">—</div>
+          <div class="bkw-summary-also" id="bkwSummaryAlso">—</div>
+        </div>
+
+        <div class="bkw-form-group">
+          <label for="bkwName">Full name</label>
+          <input type="text" id="bkwName" autocomplete="name" required>
+          <div class="bkw-form-error">Please enter your name.</div>
+        </div>
+
+        <div class="bkw-form-group">
+          <label for="bkwEmail">Email</label>
+          <input type="email" id="bkwEmail" autocomplete="email" required>
+          <div class="bkw-form-error">Please enter a valid email.</div>
+        </div>
+
+        <div class="bkw-form-group">
+          <label for="bkwPhone">Mobile <span class="bkw-optional">(optional — for SMS reminders)</span></label>
+          <input type="tel" id="bkwPhone" autocomplete="tel" placeholder="04xx xxx xxx">
+        </div>
+
+        <div class="bkw-form-group">
+          <label for="bkwNotes">Anything you'd like us to know? <span class="bkw-optional">(optional)</span></label>
+          <textarea id="bkwNotes" placeholder="A quick note about what you'd like to chat through (optional)."></textarea>
+        </div>
+
+        <div class="bkw-actions">
+          <button class="bkw-btn bkw-btn-secondary" data-action="goto-time">← Back to times</button>
+          <div class="bkw-spacer"></div>
+          <button class="bkw-btn bkw-btn-primary" id="bkwBookBtn" data-action="book">Confirm booking</button>
+        </div>
+      </div>
+
+      <!-- ───────────── PANEL 5 — Confirmed ───────────── -->
+      <div class="bkw-panel" data-panel="confirmed">
+        <div class="bkw-confirm-center">
+          <div class="bkw-confirm-icon">✓</div>
+          <h2>You're booked in</h2>
+          <p class="bkw-sub">A confirmation email is on its way. See you soon.</p>
+        </div>
+
+        <div class="bkw-confirm-when">
+          <div class="row"><div class="label">Your time</div><div class="value" id="bkwConfirmLocal">—</div></div>
+          <div class="row"><div class="label">Our time</div><div class="value" id="bkwConfirmBrisbane">—</div></div>
+          <div class="row"><div class="label">Duration</div><div class="value" id="bkwConfirmDuration">—</div></div>
+        </div>
+
+        <a id="bkwMeetLink" class="bkw-meet-btn" target="_blank" rel="noopener" style="display:none;">Join the video call</a>
+
+        <div class="bkw-addcal-row">
+          <a id="bkwAddGoogle"  class="bkw-addcal-btn" target="_blank" rel="noopener">Add to Google</a>
+          <a id="bkwAddOutlook" class="bkw-addcal-btn" target="_blank" rel="noopener">Add to Outlook</a>
+          <a id="bkwAddIcal"    class="bkw-addcal-btn" download="booking.ics">Apple / .ics</a>
+        </div>
+
+        <div class="bkw-confirm-expect">
+          <h3>What to expect</h3>
+          <ul>
+            <li>A friendly chat about what you need — no pressure, not a hard sell</li>
+            <li>Plain-language answers to your questions</li>
+            <li>A clear sense of the next steps by the end of the call</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- ───────────── PANEL 6 — Cancel confirm ───────────── -->
+      <div class="bkw-panel" data-panel="cancel-confirm">
+        <div class="bkw-step-label">Cancel booking</div>
+        <h2>Cancel your callback?</h2>
+        <p class="bkw-sub">Just confirming you want to cancel. You can always book another time later.</p>
+
+        <div class="bkw-summary-box">
+          <div class="bkw-summary-eyebrow">Currently booked</div>
+          <div class="bkw-summary-when" id="bkwCancelWhen">—</div>
+          <div class="bkw-summary-also" id="bkwCancelEmail">—</div>
+        </div>
+
+        <div class="bkw-actions">
+          <a href="/" class="bkw-btn bkw-btn-secondary">← Keep booking</a>
+          <div class="bkw-spacer"></div>
+          <button class="bkw-btn bkw-btn-danger" id="bkwCancelConfirmBtn" data-action="confirm-cancel">Yes, cancel</button>
+        </div>
+      </div>
+
+      <!-- ───────────── PANEL 7 — Cancelled ───────────── -->
+      <div class="bkw-panel" data-panel="cancelled">
+        <div class="bkw-confirm-center">
+          <div class="bkw-confirm-icon" style="background: linear-gradient(135deg,#7A7E88,#4A4D55);">✕</div>
+          <h2>Cancelled</h2>
+          <p class="bkw-sub">Your callback has been cancelled. We've sent a confirmation to your inbox.</p>
+        </div>
+        <div class="bkw-confirm-expect" style="text-align:center;">
+          <p style="margin:0;color:var(--ink-soft);font-size:14px;">Changed your mind? <a href="/book-a-callback/" style="color:var(--brand);font-weight:600;">Book a new time →</a></p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ─────────────────────────────────────────────────────────────────────────
+  // CONFIG — fill these in before deployment
+  // ─────────────────────────────────────────────────────────────────────────
+  const CONFIG = {
+    // WP proxy mode — relative path, token injected server-side
+    endpoint:  '/api/booking',
+
+    // Leave blank when using WP proxy (token lives in the WP snippet)
+    authToken: '',
+
+    // ── Brand identity — ALL of these are overridden at runtime by
+    //    get-booking-config (→ Brand-Config-DB). Defaults are intentionally
+    //    neutral so this file carries zero brand strings.
+    logoUrl:      '',
+    businessName: 'TradieUp',
+    brandColor:   '#f26522',
+    supportEmail: 'tim@tradieup.com.au',
+
+    // Event type — overridden by data-event-type attribute on container if set
+    eventType: 'discovery',
+    eventLabel: 'Call',
+
+    // Per-event-type header copy. Generic by default; get-booking-config can
+    // override the title/subtitle per brand (bookingTitle / bookingSubtitle),
+    // otherwise applyBrandCopy_ weaves the business name into the subtitle.
+    eventCopy: {
+      'discovery':   { title: 'Book a Call', subtitle: 'A quick 15-minute call at a time that suits — no pressure.' },
+      'plan_review': { title: 'Book a Call', subtitle: 'Pick a time that suits for a relaxed chat about your needs.' }
+    },
+
+    // Default timezone (overridden at runtime from the controller's timezone)
+    skipTimezoneStep: false,
+    defaultTimezone:  'Australia/Brisbane',
+  };
+
+  // Read event_type from container's data attributes if set (overrides CONFIG)
+  (function () {
+    const container = document.getElementById('bkw-calendar-widget');
+    if (container) {
+      const dt = container.getAttribute('data-event-type');
+      const dl = container.getAttribute('data-event-label');
+      if (dt) CONFIG.eventType  = dt;
+      if (dl) CONFIG.eventLabel = dl;
+    }
+  })();
+
+  // Apply per-event-type header copy to the DOM as soon as it's ready
+  (function applyHeaderCopy() {
+    const copy = (CONFIG.eventCopy && CONFIG.eventCopy[CONFIG.eventType]) || null;
+    if (!copy) return;
+    const tryApply = () => {
+      const titleEl = document.getElementById('bkwWidgetTitle');
+      const subEl   = document.getElementById('bkwWidgetSubtitle');
+      if (titleEl) titleEl.textContent = copy.title;
+      if (subEl)   subEl.textContent   = copy.subtitle;
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', tryApply);
+    } else {
+      tryApply();
+    }
+  })();
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // STATE
+  // ─────────────────────────────────────────────────────────────────────────
+  const state = {
+    userTz: null,        // e.g. "Australia/Sydney"
+    slots: [],           // array of { iso, localLabel, brisbaneLabel, dayKey }
+    slotsByDay: {},      // { 'yyyy-MM-dd': [slot, slot, ...] }
+    selectedDay: null,
+    selectedSlot: null,
+    booking: null,       // bookCall response
+    isBooking: false,
+    // Reschedule/cancel mode (driven by URL params on load)
+    mode: 'new',         // 'new' | 'reschedule' | 'cancel'
+    existingBooking: null, // { event_id, token, name, email, when_brisbane, when_local }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // BOOTSTRAP
+  // ─────────────────────────────────────────────────────────────────────────
+  // Handle both cases: DOM still loading OR already loaded (Elementor injects late)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    // DOM is already parsed — fire immediately on next tick
+    setTimeout(init, 0);
+  }
+
+  function applyLogo_() {
+    if (CONFIG.logoUrl) {
+      const logo = document.getElementById('bkwLogo');
+      logo.src = CONFIG.logoUrl;
+      if (CONFIG.businessName) logo.alt = CONFIG.businessName;
+      logo.style.display = 'block';
+    }
+  }
+
+  // ── Colour: derive a full palette from a single brandColor and write it onto
+  //    the widget's CSS custom properties. No-op if brandColor is missing, so
+  //    the neutral CSS defaults stand in (graceful degradation).
+  function hexToRgb_(hex) {
+    if (!hex) return null;
+    var h = String(hex).trim().replace('#', '');
+    if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+    return { r: parseInt(h.substr(0,2),16), g: parseInt(h.substr(2,2),16), b: parseInt(h.substr(4,2),16) };
+  }
+  function mix_(rgb, towards, amt) { // towards: 0=black 255=white; amt 0..1
+    return 'rgb(' +
+      Math.round(rgb.r + (towards - rgb.r) * amt) + ',' +
+      Math.round(rgb.g + (towards - rgb.g) * amt) + ',' +
+      Math.round(rgb.b + (towards - rgb.b) * amt) + ')';
+  }
+  function applyBrand_(brandColor) {
+    var rgb = hexToRgb_(brandColor);
+    var root = document.querySelector('.bkw-booking-widget');
+    if (!rgb || !root) return;
+    root.style.setProperty('--brand',      brandColor);
+    root.style.setProperty('--brand-soft', mix_(rgb, 0,   0.18));   // darker
+    root.style.setProperty('--brand-tint', mix_(rgb, 255, 0.90));   // very light header bg
+    root.style.setProperty('--brand-mid',  mix_(rgb, 255, 0.32));   // gradient mid
+    root.style.setProperty('--brand-pale', mix_(rgb, 255, 0.68));   // gradient end
+    root.style.setProperty('--brand-glow', 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.18)');
+  }
+
+  // ── Copy: title + subtitle. Brand can override via Brand-Config-DB
+  //    (bookingTitle / bookingSubtitle); otherwise weave businessName into the
+  //    generic subtitle so it reads naturally without hardcoding a brand.
+  function applyBrandCopy_(c) {
+    var titleEl = document.getElementById('bkwWidgetTitle');
+    var subEl   = document.getElementById('bkwWidgetSubtitle');
+    if (titleEl && c.bookingTitle)    titleEl.textContent = c.bookingTitle;
+    if (subEl) {
+      if (c.bookingSubtitle)      subEl.textContent = c.bookingSubtitle;
+      else if (c.businessName)    subEl.textContent = 'A quick chat with the ' + c.businessName + ' team, at a time that suits — no pressure.';
+    }
+    if (c.supportEmail) {
+      var empty = document.getElementById('bkwEmptyContact');
+      if (empty) empty.innerHTML = 'Email <a href="mailto:' + c.supportEmail + '">' + c.supportEmail + '</a> and we\'ll find a time.';
+    }
+  }
+
+  function init() {
+    // Pull brand identity (logo, name, colour, support email, copy, timezone)
+    // from the controller → Brand-Config-DB. Keeps all brand values out of this HTML.
+    fetch(CONFIG.endpoint + '/get-booking-config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (c) {
+      if (c && c.ok) {
+        if (c.logoUrl)      CONFIG.logoUrl = c.logoUrl;
+        if (c.businessName) CONFIG.businessName = c.businessName;
+        if (c.supportEmail) CONFIG.supportEmail = c.supportEmail;
+        if (c.timezone)     CONFIG.defaultTimezone = c.timezone;
+        if (c.brandColor)   { CONFIG.brandColor = c.brandColor; applyBrand_(c.brandColor); }
+        applyBrandCopy_(c);
+      }
+    })
+    .catch(function () {})
+    .finally(function () { applyLogo_(); });
+
+    // Detect user TZ
+    const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    state.userTz = detected;
+    const select = document.getElementById('bkwTzSelect');
+    // If detected TZ is in the dropdown, select it. Otherwise add it.
+    let found = false;
+    for (let i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === detected) { select.selectedIndex = i; found = true; break; }
+    }
+    if (!found) {
+      const opt = document.createElement('option');
+      opt.value = detected; opt.textContent = detected + ' (detected)';
+      select.insertBefore(opt, select.firstChild);
+      select.selectedIndex = 0;
+    }
+    document.getElementById('bkwTzDetectedLabel').textContent = prettifyTz(detected);
+    select.addEventListener('change', () => {
+      state.userTz = select.value;
+      document.getElementById('bkwTzDetectedLabel').textContent = prettifyTz(state.userTz);
+    });
+
+    // Wire all data-action buttons
+    document.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        const action = ev.currentTarget.getAttribute('data-action');
+        handleAction(action);
+      });
+    });
+
+    // Detect URL params — reschedule (?r=TKN&e=EID) or cancel (?c=TKN&e=EID)
+    const params = new URLSearchParams(window.location.search);
+    const eid = params.get('e');
+    const rToken = params.get('r');
+    const cToken = params.get('c');
+
+    // Skip timezone picker for SW Sydney-only deployment
+    if (CONFIG.skipTimezoneStep) {
+      state.userTz = CONFIG.defaultTimezone || 'Australia/Sydney';
+      // Remove the first step dot (4 → 3 dots)
+      const stepsContainer = document.getElementById('bkwSteps');
+      if (stepsContainer && stepsContainer.children.length === 4) {
+        stepsContainer.removeChild(stepsContainer.firstElementChild);
+      }
+      // Update remaining step labels in panel headings (1 of 4 → 1 of 3, etc.)
+      document.querySelectorAll('.bkw-step-label').forEach(el => {
+        const txt = el.textContent || '';
+        const m = txt.match(/Step\s+(\d+)\s+of\s+4/i);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n > 1) {
+            el.textContent = 'Step ' + (n - 1) + ' of 3';
+          }
+        }
+      });
+    }
+
+    if (eid && rToken) {
+      state.mode = 'reschedule';
+      enterRescheduleMode(eid, rToken);
+    } else if (eid && cToken) {
+      state.mode = 'cancel';
+      enterCancelMode(eid, cToken);
+    } else if (CONFIG.skipTimezoneStep) {
+      // New booking + timezone is forced — skip tz panel, load slots immediately
+      enterDatePanel();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RESCHEDULE MODE
+  //   On load: fetch existing booking via getBookingDetails, show banner,
+  //   skip the details panel, on confirm call rescheduleBooking.
+  // ─────────────────────────────────────────────────────────────────────────
+  async function enterRescheduleMode(eventId, token) {
+    // Update header copy
+    const headerH1 = document.querySelector('.bkw-card-header h1');
+    const headerP  = document.querySelector('.bkw-card-header p');
+    if (headerH1) headerH1.textContent = 'Reschedule your call';
+    if (headerP)  headerP.textContent  = 'Pick a new time below. Your old slot will be released automatically.';
+
+    try {
+      const resp = await callApi('getBookingDetails', {
+        event_id: eventId,
+        booking_token: token,
+        user_timezone: state.userTz
+      });
+      if (!resp.ok) {
+        showError(resp.error || 'Could not load your booking. The link may be invalid or the call may already be cancelled.');
+        return;
+      }
+      state.existingBooking = {
+        event_id: resp.event_id,
+        token: token,
+        name: resp.name,
+        email: resp.email,
+        when_brisbane: resp.when_brisbane,
+        when_local: resp.when_local
+      };
+      // Show banner
+      document.getElementById('bkwRescheduleBanner').style.display = 'block';
+      document.getElementById('bkwRbCurrentTime').textContent = resp.when_local + ' (' + prettifyTz(state.userTz) + ')';
+      // Hide the step indicator's last dot (details step) since we skip it
+      const dots = document.querySelectorAll('.bkw-step-dot');
+      if (dots.length >= 4) dots[3].style.display = 'none';
+    } catch (err) {
+      showError('Could not load your booking — ' + err.message);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CANCEL MODE
+  //   On load: fetch booking details to confirm + show context, then user
+  //   clicks "Yes, cancel" → calls cancelBooking.
+  // ─────────────────────────────────────────────────────────────────────────
+  async function enterCancelMode(eventId, token) {
+    // Hide step indicator entirely — cancel is a single-action flow
+    document.getElementById('bkwSteps').style.display = 'none';
+    const headerH1 = document.querySelector('.bkw-card-header h1');
+    const headerP  = document.querySelector('.bkw-card-header p');
+    if (headerH1) headerH1.textContent = 'Cancel your call';
+    if (headerP)  headerP.textContent  = 'Just checking — confirm the cancellation below.';
+
+    try {
+      const resp = await callApi('getBookingDetails', {
+        event_id: eventId,
+        booking_token: token,
+        user_timezone: state.userTz
+      });
+      if (!resp.ok) {
+        showError(resp.error || 'Could not load your booking.');
+        return;
+      }
+      state.existingBooking = {
+        event_id: resp.event_id,
+        token: token,
+        email: resp.email,
+        when_brisbane: resp.when_brisbane,
+        when_local: resp.when_local
+      };
+      document.getElementById('bkwCancelWhen').textContent = resp.when_local + ' (' + prettifyTz(state.userTz) + ')';
+      document.getElementById('bkwCancelEmail').textContent = 'Our time: ' + resp.when_brisbane;
+      showPanel('cancel-confirm', 0);
+    } catch (err) {
+      showError('Could not load your booking — ' + err.message);
+    }
+  }
+
+  async function submitCancel() {
+    if (!state.existingBooking) return;
+    const btn = document.getElementById('bkwCancelConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Cancelling…';
+    clearError();
+    showLoadingOverlay('Cancelling your call', 'Removing your booking and sending the confirmation. This can take 10-15 seconds.');
+    try {
+      const resp = await callApi('cancelBooking', {
+        event_id: state.existingBooking.event_id,
+        booking_token: state.existingBooking.token
+      });
+      if (!resp.ok) throw new Error(resp.error || 'Cancellation failed.');
+      hideLoadingOverlay();
+      document.getElementById('bkwSteps').style.display = 'none';
+      showPanel('cancelled', 0);
+    } catch (err) {
+      hideLoadingOverlay();
+      showError('Cancellation failed — ' + err.message + '. Try again or email ' + CONFIG.supportEmail + '.');
+      btn.disabled = false;
+      btn.textContent = 'Yes, cancel';
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ACTION ROUTING
+  // ─────────────────────────────────────────────────────────────────────────
+  function handleAction(action) {
+    clearError();
+    switch (action) {
+      case 'goto-tz':         showPanel('tz', 1); break;
+      case 'goto-date':       enterDatePanel(); break;
+      case 'goto-time':       showPanel('time', 3); break;
+      case 'book':            submitBooking(); break;
+      case 'confirm-cancel':  submitCancel(); break;
+    }
+  }
+
+  function showPanel(name, stepIdx) {
+    document.querySelectorAll('.bkw-panel').forEach(p => p.classList.remove('active'));
+    const el = document.querySelector('.bkw-panel[data-panel="' + name + '"]');
+    if (el) el.classList.add('active');
+    updateSteps(stepIdx);
+    // Scroll widget into view (helpful on mobile)
+    try {
+      document.querySelector('.bkw-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {}
+  }
+
+  function updateSteps(activeIdx) {
+    const dots = document.querySelectorAll('.bkw-step-dot');
+    dots.forEach((d, i) => {
+      d.classList.remove('active', 'done');
+      if (i + 1 < activeIdx) d.classList.add('done');
+      else if (i + 1 === activeIdx) d.classList.add('active');
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SLOTS — fetch + render
+  // ─────────────────────────────────────────────────────────────────────────
+  async function enterDatePanel() {
+    showPanel('date', 2);
+    document.getElementById('bkwTzLabelDate').textContent = prettifyTz(state.userTz);
+
+    document.getElementById('bkwDatePanelLoading').style.display = 'block';
+    document.getElementById('bkwDateGrid').style.display = 'none';
+    document.getElementById('bkwDateEmpty').style.display = 'none';
+
+    try {
+      const resp = await callApi('getAvailableSlots', { userTimezone: state.userTz });
+      if (!resp.ok) throw new Error(resp.error || 'Could not load times.');
+      state.slots = resp.slots || [];
+      groupSlotsByDay();
+      renderDateGrid();
+    } catch (err) {
+      document.getElementById('bkwDatePanelLoading').style.display = 'none';
+      showError('We couldn\'t load available times. Please try again, or email ' + CONFIG.supportEmail + '. Error: ' + err.message);
+    }
+  }
+
+  function groupSlotsByDay() {
+    state.slotsByDay = {};
+    state.slots.forEach(s => {
+      if (!state.slotsByDay[s.dayKey]) state.slotsByDay[s.dayKey] = [];
+      state.slotsByDay[s.dayKey].push(s);
+    });
+  }
+
+  function renderDateGrid() {
+    document.getElementById('bkwDatePanelLoading').style.display = 'none';
+    const grid = document.getElementById('bkwDateGrid');
+    grid.innerHTML = '';
+
+    const dayKeys = Object.keys(state.slotsByDay).sort();
+    if (dayKeys.length === 0) {
+      document.getElementById('bkwDateEmpty').style.display = 'block';
+      return;
+    }
+
+    dayKeys.forEach(dayKey => {
+      const sample = state.slotsByDay[dayKey][0];
+      // sample.localLabel is "EEE d MMM, h:mm a" — split out the date part
+      const datePart = sample.localLabel.split(',')[0]; // "Mon 18 May"
+      const dowMatch = datePart.match(/^([A-Za-z]+)\s+(\d+)\s+([A-Za-z]+)/);
+      const dow = dowMatch ? dowMatch[1] : '';
+      const day = dowMatch ? dowMatch[2] : '';
+      const mon = dowMatch ? dowMatch[3] : '';
+
+      const tile = document.createElement('div');
+      tile.className = 'bkw-date-tile';
+      tile.setAttribute('data-day', dayKey);
+      tile.innerHTML =
+        '<span class="bkw-date-tile-dow">' + escapeHtml(dow) + '</span>' +
+        '<span class="bkw-date-tile-day">' + escapeHtml(day) + '</span>' +
+        '<span class="bkw-date-tile-mon">' + escapeHtml(mon) + '</span>';
+      tile.addEventListener('click', () => selectDay(dayKey));
+      grid.appendChild(tile);
+    });
+
+    grid.style.display = 'grid';
+  }
+
+  function selectDay(dayKey) {
+    state.selectedDay = dayKey;
+    document.querySelectorAll('.bkw-date-tile').forEach(t => {
+      t.classList.toggle('selected', t.getAttribute('data-day') === dayKey);
+    });
+    // Short delay so the selection is visible before transition
+    setTimeout(() => renderTimeGrid(dayKey), 180);
+  }
+
+  function renderTimeGrid(dayKey) {
+    const slots = state.slotsByDay[dayKey] || [];
+    const grid = document.getElementById('bkwTimeGrid');
+    grid.innerHTML = '';
+
+    const heading = document.getElementById('bkwTimeHeading');
+    const note = document.getElementById('bkwTimeTzNote');
+    if (slots.length) {
+      const datePart = slots[0].localLabel.split(',')[0];
+      heading.textContent = 'Pick a time on ' + datePart;
+    } else {
+      heading.textContent = 'Pick a time';
+    }
+    note.textContent = 'Times shown in ' + prettifyTz(state.userTz) + '.';
+
+    slots.forEach(s => {
+      const timePart = (s.localLabel.split(',')[1] || '').trim(); // "10:30 AM"
+      const tile = document.createElement('div');
+      tile.className = 'bkw-time-tile';
+      tile.setAttribute('data-iso', s.iso);
+      tile.textContent = timePart;
+      tile.addEventListener('click', () => selectSlot(s));
+      grid.appendChild(tile);
+    });
+
+    showPanel('time', 3);
+  }
+
+  function selectSlot(slot) {
+    state.selectedSlot = slot;
+    document.querySelectorAll('.bkw-time-tile').forEach(t => {
+      t.classList.toggle('selected', t.getAttribute('data-iso') === slot.iso);
+    });
+
+    if (state.mode === 'reschedule') {
+      // Skip details panel — we already have name + email from getBookingDetails
+      setTimeout(() => submitReschedule(slot), 200);
+      return;
+    }
+
+    // Populate Step 4 summary box
+    document.getElementById('bkwSummaryWhen').textContent = slot.localLabel + ' (' + prettifyTz(state.userTz) + ')';
+    document.getElementById('bkwSummaryAlso').textContent = 'Our time: ' + slot.brisbaneLabel;
+
+    // Brief pause then jump to details
+    setTimeout(() => showPanel('details', 4), 220);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RESCHEDULE SUBMIT
+  // ─────────────────────────────────────────────────────────────────────────
+  async function submitReschedule(slot) {
+    if (state.isBooking || !state.existingBooking) return;
+    state.isBooking = true;
+    clearError();
+
+    // Show clear "Rescheduling…" state — full overlay with spinner.
+    showLoadingOverlay('Rescheduling your call', 'Updating your calendar and sending the new invite. This can take 10-20 seconds.');
+
+    try {
+      const resp = await callApi('rescheduleBooking', {
+        event_id:      state.existingBooking.event_id,
+        booking_token: state.existingBooking.token,
+        new_slot_iso:  slot.iso,
+        user_timezone: state.userTz
+      });
+      if (!resp.ok) throw new Error(resp.error || 'Reschedule failed.');
+      state.booking = resp;
+      renderConfirmation(resp, { name: state.existingBooking.name, email: state.existingBooking.email });
+      // Confirmation copy tweak for reschedule
+      const center = document.querySelector('.bkw-panel[data-panel="confirmed"] .bkw-confirm-center');
+      const h2 = center && center.querySelector('h2');
+      const sub = center && center.querySelector('.bkw-sub');
+      if (h2) h2.textContent = 'Rescheduled — you\'re booked in';
+      if (sub) sub.textContent = 'Your old slot has been released. A new confirmation email is on its way.';
+      document.getElementById('bkwRescheduleBanner').style.display = 'none';
+      hideLoadingOverlay();
+      showPanel('confirmed', 4);
+    } catch (err) {
+      hideLoadingOverlay();
+      showError('Could not reschedule — ' + err.message + '. Try a different time, or email ' + CONFIG.supportEmail + '.');
+    } finally {
+      state.isBooking = false;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // BOOKING SUBMIT
+  // ─────────────────────────────────────────────────────────────────────────
+  async function submitBooking() {
+    if (state.isBooking) return;
+
+    const name  = document.getElementById('bkwName').value.trim();
+    const email = document.getElementById('bkwEmail').value.trim();
+    const phone = document.getElementById('bkwPhone').value.trim();
+    const notes = document.getElementById('bkwNotes').value.trim();
+
+    let valid = true;
+    const nameGroup  = document.getElementById('bkwName').closest('.bkw-form-group');
+    const emailGroup = document.getElementById('bkwEmail').closest('.bkw-form-group');
+    nameGroup.classList.remove('has-error');
+    emailGroup.classList.remove('has-error');
+    if (!name)  { nameGroup.classList.add('has-error');  valid = false; }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      emailGroup.classList.add('has-error'); valid = false;
+    }
+    if (!valid || !state.selectedSlot) return;
+
+    const btn = document.getElementById('bkwBookBtn');
+    btn.disabled = true;
+    btn.textContent = 'Booking…';
+    state.isBooking = true;
+    clearError();
+    showLoadingOverlay('Booking your call', 'Creating your calendar event and sending the invite. This can take 10-20 seconds.');
+
+    try {
+      const resp = await callApi('bookCall', {
+        slot_iso:      state.selectedSlot.iso,
+        name:          name,
+        email:         email,
+        phone:         phone,
+        user_timezone: state.userTz,
+        notes:         notes,
+      });
+      if (!resp.ok) throw new Error(resp.error || 'Booking failed.');
+      state.booking = resp;
+      renderConfirmation(resp, { name, email });
+      hideLoadingOverlay();
+      showPanel('confirmed', 4);
+    } catch (err) {
+      hideLoadingOverlay();
+      showError('Couldn\'t complete the booking — ' + err.message + '. Try a different time, or email ' + CONFIG.supportEmail + '.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Confirm booking';
+      state.isBooking = false;
+    }
+  }
+
+  function renderConfirmation(resp, lead) {
+    document.getElementById('bkwConfirmLocal').textContent    = resp.when_local + ' (' + prettifyTz(state.userTz) + ')';
+    document.getElementById('bkwConfirmBrisbane').textContent = resp.when_brisbane;
+    // Set duration dynamically based on event type
+    const durationEl = document.getElementById('bkwConfirmDuration');
+    if (durationEl) {
+      const mins = (CONFIG.eventType === 'plan_review') ? 30 : 15;
+      durationEl.textContent = mins + ' minutes';
+    }
+
+    // Video link only shown when the controller returns one (phone callbacks won't)
+    const meetEl = document.getElementById('bkwMeetLink');
+    if (meetEl) {
+      if (resp.meet_url) { meetEl.href = resp.meet_url; meetEl.style.display = 'block'; }
+      else { meetEl.style.display = 'none'; }
+    }
+
+    // Build Google Calendar link — title/details from runtime brand values only
+    const startUtc = formatIsoForCal(resp.ical_start_iso);
+    const endUtc = formatIsoForCal(addMinutes(resp.ical_start_iso, 30));
+    const brandName = CONFIG.businessName || '';
+    const eventTitle = CONFIG.eventLabel + (brandName ? ' with ' + brandName : '');
+    const eventDetails = (resp.meet_url ? ('Video call: ' + resp.meet_url + '\n\n') : '')
+      + 'Booked' + (brandName ? ' with ' + brandName : '') + '.';
+
+    const gcalUrl = 'https://calendar.google.com/calendar/render?action=TEMPLATE'
+      + '&text=' + encodeURIComponent(eventTitle)
+      + '&dates=' + startUtc + '/' + endUtc
+      + '&details=' + encodeURIComponent(eventDetails);
+    document.getElementById('bkwAddGoogle').href = gcalUrl;
+
+    // Outlook365
+    const outlookUrl = 'https://outlook.office.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent'
+      + '&subject=' + encodeURIComponent(eventTitle)
+      + '&startdt=' + encodeURIComponent(resp.ical_start_iso)
+      + '&enddt=' + encodeURIComponent(addMinutes(resp.ical_start_iso, 30))
+      + '&body=' + encodeURIComponent(eventDetails);
+    document.getElementById('bkwAddOutlook').href = outlookUrl;
+
+    // .ics download (data URI)
+    const ics = buildIcs({
+      title: eventTitle,
+      description: eventDetails,
+      startUtc, endUtc,
+      uid: 'bkw-' + (resp.event_id || Date.now()) + '@' + (location.hostname || 'booking'),
+    });
+    const icsDataUri = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
+    document.getElementById('bkwAddIcal').href = icsDataUri;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // API CLIENT — supports two modes:
+  //   1) WP proxy (RECOMMENDED): endpoint is the /wp-json/custom/v1/ base URL,
+  //      authToken is left blank. Each action posts to a route like
+  //      /wp-json/custom/v1/available-slots. The WP snippet injects the
+  //      AUTH_TOKEN server-side so it never reaches the browser.
+  //   2) Direct controller: endpoint is the Apps Script /exec URL, authToken
+  //      is the controller's AUTH_TOKEN. Used for pre-WP-proxy pilots; works
+  //      but exposes the token in page source. Move off this ASAP.
+  // The widget auto-detects which mode is in use based on the endpoint URL.
+  // ─────────────────────────────────────────────────────────────────────────
+  async function callApi(action, payload) {
+    if (CONFIG.endpoint.indexOf('PASTE_') !== -1) {
+      throw new Error('Widget not configured yet (endpoint missing).');
+    }
+    const isWpProxy = /\/wp-json\//.test(CONFIG.endpoint);
+    let url, body, contentType;
+    if (isWpProxy) {
+      const routeMap = {
+        'getAvailableSlots':  'get-slots',
+        'bookCall':           'book-call',
+        'getBookingDetails':  'get-booking-details',
+        'rescheduleBooking':  'reschedule-booking',
+        'cancelBooking':      'cancel-booking',
+      };
+      const route = routeMap[action];
+      if (!route) throw new Error('Unknown booking action: ' + action);
+      url = CONFIG.endpoint.replace(/\/+$/, '') + '/' + route;
+      // No token in browser-side body — WP injects it server-side.
+      // Always send event_type so backend knows duration + title to use.
+      body = Object.assign({ event_type: CONFIG.eventType }, payload || {});
+      // Same-origin call → application/json is safe and WP parses it cleanly.
+      contentType = 'application/json';
+    } else {
+      // Direct-controller mode (legacy).
+      url = CONFIG.endpoint;
+      body = Object.assign({ action: action, token: CONFIG.authToken, event_type: CONFIG.eventType }, payload || {});
+      // Cross-origin to Apps Script → text/plain avoids CORS preflight.
+      contentType = 'text/plain;charset=utf-8';
+    }
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': contentType },
+      body: JSON.stringify(body),
+      redirect: 'follow',
+    });
+    const text = await resp.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch (e) { throw new Error('Server returned unexpected response. ' + text.substring(0, 200)); }
+    return json;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HELPERS
+  // ─────────────────────────────────────────────────────────────────────────
+  function showError(msg) {
+    const box = document.getElementById('bkwError');
+    box.textContent = msg;
+    box.classList.add('visible');
+    try { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e) {}
+  }
+  function clearError() {
+    document.getElementById('bkwError').classList.remove('visible');
+  }
+  function showLoadingOverlay(title, subtitle) {
+    let el = document.getElementById('bkwLoadingOverlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'bkwLoadingOverlay';
+      el.className = 'bkw-loading-overlay';
+      el.innerHTML =
+        '<div class="bkw-loading-card">' +
+          '<div class="bkw-loading-spinner"></div>' +
+          '<div class="bkw-loading-title">Working…</div>' +
+          '<div class="bkw-loading-subtitle"></div>' +
+        '</div>';
+      const card = document.querySelector('.bkw-card');
+      if (card) card.appendChild(el);
+    }
+    el.querySelector('.bkw-loading-title').textContent = title || 'Working…';
+    el.querySelector('.bkw-loading-subtitle').textContent = subtitle || '';
+    el.classList.add('visible');
+  }
+  function hideLoadingOverlay() {
+    const el = document.getElementById('bkwLoadingOverlay');
+    if (el) el.classList.remove('visible');
+  }
+  function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+  function prettifyTz(tz) {
+    const map = {
+      'Australia/Sydney':    'Sydney (AEST/AEDT)',
+      'Australia/Melbourne': 'Melbourne (AEST/AEDT)',
+      'Australia/Hobart':    'Hobart (AEST/AEDT)',
+      'Australia/Brisbane':  'Brisbane (AEST)',
+      'Australia/Adelaide':  'Adelaide (ACST/ACDT)',
+      'Australia/Darwin':    'Darwin (ACST)',
+      'Australia/Perth':     'Perth (AWST)',
+      'Pacific/Auckland':    'Auckland (NZST/NZDT)',
+    };
+    return map[tz] || tz;
+  }
+  function formatIsoForCal(iso) {
+    // → YYYYMMDDTHHMMSSZ (Google Calendar URL format)
+    return iso.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  }
+  function addMinutes(iso, mins) {
+    const d = new Date(iso);
+    d.setMinutes(d.getMinutes() + mins);
+    return d.toISOString();
+  }
+  function buildIcs({ title, description, startUtc, endUtc, uid }) {
+    return [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Booking//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      'UID:' + uid,
+      'DTSTAMP:' + formatIsoForCal(new Date().toISOString()),
+      'DTSTART:' + startUtc,
+      'DTEND:' + endUtc,
+      'SUMMARY:' + (title || '').replace(/\n/g, '\\n'),
+      'DESCRIPTION:' + (description || '').replace(/\n/g, '\\n'),
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].join('\r\n');
+  }
+})();
+</script>
