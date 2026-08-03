@@ -266,10 +266,17 @@ function buildRoast(){
   });
   var fixes='';
   (S.fixes||[]).forEach(function(f,i){ fixes+='<li><span class="n">'+(i+1)+'</span><span>'+f+'</span></li>'; });
+  var ag='';
+  if(S.agentic){
+    var a=S.agentic, agcol=(a.score>=4?'var(--good)':(a.score>=2?'var(--amber)':'var(--bad)'));
+    var rows=(a.checks||[]).map(function(c){return '<div style="display:flex;gap:8px;align-items:flex-start;margin:5px 0;font-size:13.5px"><span style="color:'+(c.pass?'var(--good)':'var(--bad)')+';font-weight:800;line-height:1.4">'+(c.pass?'\u2713':'\u2717')+'</span><span><b>'+c.label+'</b> \u2014 <span style="color:var(--mut)">'+(c.note||'')+'</span></span></div>';}).join('');
+    ag='<div class="rsec" style="border-color:var(--accentdim)"><div class="rh"><span>AI-Agent Ready</span><span class="vb" style="background:'+agcol+';color:#0d0d0d">'+a.score+' / '+a.max+'</span></div><div class="rp" style="margin-bottom:6px">Can AI assistants (ChatGPT, Google, Siri) read your site and put you forward to customers? This is Google\u2019s new \u201cAgentic Browsing\u201d measure \u2014 and it\u2019s where the next wave of leads is heading.</div>'+rows+'<div style="font-size:13.5px;margin-top:8px"><b>'+(a.oneLiner||'')+'</b></div><div id="psiReal" style="font-size:12px;color:var(--mut);margin-top:6px"></div></div>';
+  }
   body.innerHTML =
     '<div class="glab" style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;font-weight:800;color:var(--accent2)">The verdict on '+(S.url||'your site')+'</div>'+
     '<div style="font-size:19px;font-weight:800;margin:6px 0 4px">'+(S.headline||'')+'</div>'+
     '<div class="rscore"><div class="num" style="color:'+col+'">'+S.score+'</div><div class="out">/ 100<div class="rbar"><i style="width:'+S.score+'%;background:'+col+'"></i></div></div></div>'+
+    ag+
     secs+
     '<div class="rsec" style="border-color:var(--accentdim)"><div class="rh"><span>The things to fix first</span></div><ul class="fixes">'+fixes+'</ul></div>'+
     '<div style="font-size:14px;color:var(--ink);margin:10px 2px 0;line-height:1.55"><b>'+(S.oneLiner||'')+'</b></div>'+
