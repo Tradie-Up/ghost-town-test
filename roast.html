@@ -275,7 +275,6 @@ function buildRoast(){
     '<div style="font-size:14px;color:var(--ink);margin:10px 2px 0;line-height:1.55"><b>'+(S.oneLiner||'')+'</b></div>'+
     '<div class="disc">Honest take based on a real read of your site — a guide to what\'s costing you work, not a guarantee. Every site\'s different.</div>';
 }
-function sendRoast(){ var e=(document.getElementById('email').value||'').trim(); if(!/.+@.+\..+/.test(e)){document.getElementById('email').style.borderColor='var(--bad)';return;} document.getElementById('ctaBox').innerHTML='<div class="ct">Nice one — on its way.</div><div class="cd">Keep an eye on your inbox for the full fix-list.</div>'; }
-</script>
+function sendRoast(){var email=(document.getElementById('email').value||'').trim();if(!/.+@.+\..+/.test(email)){document.getElementById('email').style.borderColor='var(--bad)';return;}var trade=(document.getElementById('trade2').value||'').trim();var box=document.getElementById('ctaBox');box.innerHTML='<div class="ct">Sending\u2026</div>';var payload={email:email,url:(STATE&&STATE.url)||'',trade:trade,roast:STATE};fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){box.innerHTML='<div class="ct">Nice one \u2014 on its way.</div><div class="cd">We\u2019ve emailed your roast to '+email+'. Have a squiz (check spam just in case), and we\u2019ll be in touch about getting it sorted.</div>';}).catch(function(){box.innerHTML='<div class="ct">Got your details.</div><div class="cd">We\u2019ll be in touch about getting your site sorted.</div>';});}</script>
 </body>
 </html>
