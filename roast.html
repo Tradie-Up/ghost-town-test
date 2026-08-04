@@ -188,7 +188,7 @@
       <div id="roastBody"></div>
       <div id="ctaBox" class="ctabox">
         <div class="ct">Want the full fix-list?</div>
-        <div class="cd">The complete rundown of what's holding your site back — and the plain-English plan to fix it. Then you decide if it's worth a yarn.</div>
+        <div class="cd">The complete rundown of what's holding your site back — and the plain-English plan to fix it. Then you decide if it's worth a chat.</div>
         <input id="email" placeholder="Your email" autocomplete="off">
         <button class="btn" onclick="sendRoast()">Send me the full fix-list</button>
         <div class="microcopy">Some of this might sting — that's usually where the missed jobs are hiding. The fix-list is free, and there's no chasing. Grab it, and take it from there.</div>
@@ -282,6 +282,6 @@ function buildRoast(){
     '<div style="font-size:14px;color:var(--ink);margin:10px 2px 0;line-height:1.55"><b>'+(S.oneLiner||'')+'</b></div>'+
     '<div class="disc">Honest take based on a real read of your site — a guide to what\'s costing you work, not a guarantee. Every site\'s different.</div>';
 }
-function sendRoast(){var email=(document.getElementById('email').value||'').trim();if(!/.+@.+\..+/.test(email)){document.getElementById('email').style.borderColor='var(--bad)';return;}var trade=(document.getElementById('trade2').value||'').trim();var box=document.getElementById('ctaBox');box.innerHTML='<div class="ct">Sending\u2026</div>';var payload={email:email,url:(STATE&&STATE.url)||'',trade:trade,roast:STATE};fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){box.innerHTML='<div class="ct">Nice one \u2014 on its way.</div><div class="cd">We\u2019ve emailed your roast to '+email+'. Have a squiz (check spam just in case), and we\u2019ll be in touch about getting it sorted.</div>';}).catch(function(){box.innerHTML='<div class="ct">Got your details.</div><div class="cd">We\u2019ll be in touch about getting your site sorted.</div>';});}</script>
+function sendRoast(){var email=(document.getElementById('email').value||'').trim();if(!/.+@.+\..+/.test(email)){document.getElementById('email').style.borderColor='var(--bad)';return;}var trade=(document.getElementById('trade2').value||'').trim();var box=document.getElementById('ctaBox');box.innerHTML='<div class="ct">Sending\u2026</div>';var payload={email:email,url:(STATE&&STATE.url)||'',trade:trade,roast:STATE};fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){box.innerHTML='<div class="ct">Smart move \u2014 on its way.</div><div class="cd">We\u2019ve emailed your website roast to '+email+'. You\u2019ll see we\u2019ve given you a list of things to fix (check spam just in case). Book a call if you want help getting your business seen on Google and AI by potential customers.</div>';}).catch(function(){box.innerHTML='<div class="ct">Hmm, that didn\u2019t send.</div><div class="cd">Give it another go in a moment.</div>';});}</script>
 </body>
 </html>

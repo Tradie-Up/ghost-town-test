@@ -1693,7 +1693,11 @@ body{
     if (CONFIG.endpoint.indexOf('PASTE_') !== -1) {
       throw new Error('Widget not configured yet (endpoint missing).');
     }
-    const isWpProxy = /\/wp-json\//.test(CONFIG.endpoint);
+    // Proxy mode = any relative / same-origin endpoint. Covers both the WordPress
+    // /wp-json proxy AND the Vercel /api/booking proxy: both inject the security
+    // token server-side and expect the action as a /<route> path suffix (never a
+    // POST body to the bare base URL, which 404s on Vercel's [route] function).
+    const isWpProxy = /\/wp-json\//.test(CONFIG.endpoint) || /^\//.test(CONFIG.endpoint);
     let url, body, contentType;
     if (isWpProxy) {
       const routeMap = {
@@ -1718,17 +1722,37 @@ body{
       // Cross-origin to Apps Script → text/plain avoids CORS preflight.
       contentType = 'text/plain;charset=utf-8';
     }
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': contentType },
-      body: JSON.stringify(body),
-      redirect: 'follow',
-    });
-    const text = await resp.text();
-    let json;
-    try { json = JSON.parse(text); }
-    catch (e) { throw new Error('Server returned unexpected response. ' + text.substring(0, 200)); }
-    return json;
+    // Retry on a non-JSON reply. When the serverless proxy / Apps Script backend
+    // is cold, the very first hit can transiently return Google's interstitial
+    // HTML instead of JSON. One or two quick retries turn that into a clean load
+    // for the visitor instead of a "couldn't load times" error.
+    // IMPORTANT: only retry READ actions. bookCall/reschedule/cancel mutate state
+    // (they create or move a calendar event); a cold reply can arrive AFTER the
+    // booking already succeeded, so a blind retry would re-fire the booking and
+    // trip the double-book guard, showing the very person who just booked a
+    // confusing "someone else took that slot" error. Mutations get one attempt.
+    const isReadOnly = /^(getAvailableSlots|getBookingDetails|getBookingConfig)$/.test(action);
+    const MAX_TRIES = isReadOnly ? 3 : 1;
+    let lastText = '';
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': contentType },
+        body: JSON.stringify(body),
+        redirect: 'follow',
+      });
+      lastText = await resp.text();
+      try {
+        return JSON.parse(lastText);
+      } catch (e) {
+        // Not JSON (cold-start interstitial). Back off briefly and try again.
+        if (attempt < MAX_TRIES) {
+          await new Promise(function (r) { setTimeout(r, 700 * attempt); });
+          continue;
+        }
+      }
+    }
+    throw new Error('Server returned unexpected response. ' + lastText.substring(0, 200));
   }
 
   // ─────────────────────────────────────────────────────────────────────────
