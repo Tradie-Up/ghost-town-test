@@ -1843,25 +1843,52 @@ body{
     // trip the double-book guard, showing the very person who just booked a
     // confusing "someone else took that slot" error. Mutations get one attempt.
     const isReadOnly = /^(getAvailableSlots|getBookingDetails|getBookingConfig)$/.test(action);
-    const MAX_TRIES = isReadOnly ? 3 : 1;
+    // A cold Apps Script backend answers the first hit(s) with Google's "loading"
+    // interstitial. Sometimes that reaches us as non-JSON; more often the proxy
+    // catches it and hands back a CLEAN {ok:false, error:'bad upstream response'}.
+    // BOTH are transient. For READ actions we ride them out with several backed-off
+    // retries (a cold start takes ~10-20s to warm), so the visitor sees a short
+    // spinner instead of an error. Mutations (book/reschedule/cancel) still get ONE
+    // attempt — a cold reply can land AFTER the write already succeeded, so a blind
+    // retry would double-fire.
+    const isTransientUpstream = function (obj) {
+      if (!obj || obj.ok !== false) return false;
+      const e = String(obj.error || '').toLowerCase();
+      return /bad upstream|upstream|interstitial|loading|time ?d? ?out|timeout|temporar|unavailable|try again|50[234]/.test(e);
+    };
+    const backoff = function (attempt) {
+      return new Promise(function (r) { setTimeout(r, Math.min(1200 * attempt, 5000)); });
+    };
+    const MAX_TRIES = isReadOnly ? 6 : 1;
     let lastText = '';
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': contentType },
-        body: JSON.stringify(body),
-        redirect: 'follow',
-      });
-      lastText = await resp.text();
+      let resp;
       try {
-        return JSON.parse(lastText);
-      } catch (e) {
-        // Not JSON (cold-start interstitial). Back off briefly and try again.
-        if (attempt < MAX_TRIES) {
-          await new Promise(function (r) { setTimeout(r, 700 * attempt); });
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': contentType },
+          body: JSON.stringify(body),
+          redirect: 'follow',
+        });
+        lastText = await resp.text();
+      } catch (netErr) {
+        // Network blip / proxy timeout mid-flight. Ride it out on reads.
+        lastText = 'network error: ' + ((netErr && netErr.message) || netErr);
+        if (isReadOnly && attempt < MAX_TRIES) { await backoff(attempt); continue; }
+        throw new Error(lastText);
+      }
+      let parsed = null, parseOk = true;
+      try { parsed = JSON.parse(lastText); } catch (e) { parseOk = false; }
+      if (parseOk) {
+        // Clean JSON — retry ONLY a transient upstream error, and ONLY on reads.
+        if (isReadOnly && attempt < MAX_TRIES && isTransientUpstream(parsed)) {
+          await backoff(attempt);
           continue;
         }
+        return parsed;
       }
+      // Non-JSON (raw interstitial). Back off and retry reads.
+      if (isReadOnly && attempt < MAX_TRIES) { await backoff(attempt); continue; }
     }
     throw new Error('Server returned unexpected response. ' + lastText.substring(0, 200));
   }
