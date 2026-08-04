@@ -816,6 +816,29 @@ body{
   .bkw-date-grid { grid-template-columns: repeat(3, 1fr) !important; }
   .bkw-time-grid { grid-template-columns: repeat(3, 1fr) !important; }
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   GREEN ACTION BUTTONS + SUCCESS TICK
+   The forward/commit buttons ("See available times", "Confirm booking")
+   are white-on-green; the confirmation tick is a white check on a green
+   circle. The rest of the orange TradieUp branding stays as-is.
+   ────────────────────────────────────────────────────────────────────── */
+.bkw-btn-primary {
+  background: #2ec76a !important;
+  color: #ffffff !important;
+  border: 2px solid #2ec76a !important;
+}
+.bkw-btn-primary:hover:not(:disabled) {
+  background: #28b25f !important;
+  color: #ffffff !important;
+  border: 2px solid #28b25f !important;
+}
+.bkw-confirm-icon {
+  background: #2ec76a !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: 0 8px 24px rgba(46,199,106,.35) !important;
+}
 </style>
 
 <div class="bkw-booking-widget">
@@ -1251,6 +1274,15 @@ body{
       });
     });
 
+    // Capture the lead the moment they've entered a name + valid email on the
+    // details step — before they click "Confirm booking" — so a visitor who
+    // drops off is still a followable lead (status "Not Booked"). Re-fires if
+    // they then add or change their phone. See captureLeadEarly().
+    ['bkwName', 'bkwEmail', 'bkwPhone'].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('blur', captureLeadEarly);
+    });
+
     // Wire the phone/video meeting-type choice
     document.querySelectorAll('#bkwMeetChoice .bkw-meet-opt').forEach(opt => {
       opt.addEventListener('click', () => {
@@ -1544,6 +1576,7 @@ body{
   function selectSlot(slot) {
     state.selectedSlot = slot;
     state.bookIdemKey = null;   // new slot → fresh idempotency key on next submit
+    state.leadSig = null;       // new slot → allow a fresh "Not Booked" lead capture
     document.querySelectorAll('.bkw-time-tile').forEach(t => {
       t.classList.toggle('selected', t.getAttribute('data-iso') === slot.iso);
     });
@@ -1598,6 +1631,45 @@ body{
     } finally {
       state.isBooking = false;
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // EARLY LEAD CAPTURE
+  // Fire-and-forget as soon as the visitor has entered a name + valid email on
+  // the details step. Writes (or updates) a "Not Booked" row in the booking
+  // sheet, so a drop-off before the final "Confirm booking" click is still a
+  // lead worth chasing. When they DO confirm, the backend matches that row by
+  // email and flips it to "Booked" — no duplicate row. Routed through the
+  // existing book-call endpoint with capture_only:true (the connector
+  // short-circuits it to a lead write, creating no calendar event), so no new
+  // proxy route is required.
+  // ─────────────────────────────────────────────────────────────────────────
+  function captureLeadEarly() {
+    if (state.mode === 'reschedule') return;   // reschedules already have a row
+    if (!state.selectedSlot) return;
+    const nEl = document.getElementById('bkwName');
+    const eEl = document.getElementById('bkwEmail');
+    const pEl = document.getElementById('bkwPhone');
+    const name  = nEl ? nEl.value.trim() : '';
+    const email = eEl ? eEl.value.trim() : '';
+    const phone = pEl ? pEl.value.trim() : '';
+    // Need a valid email — it's the key the backend matches on later to flip the
+    // row to "Booked". Without it the two can't be joined, so hold off.
+    if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
+    const sig = name + '|' + email + '|' + phone;
+    if (state.leadSig === sig) return;         // nothing changed since last capture
+    state.leadSig = sig;
+    CONFIG.eventType = (state.meetType === 'video') ? 'video' : 'discovery';
+    try {
+      callApi('bookCall', {
+        slot_iso:      state.selectedSlot.iso,
+        name:          name,
+        email:         email,
+        phone:         phone,
+        user_timezone: state.userTz,
+        capture_only:  true,
+      }).catch(function () { state.leadSig = null; });   // let a later blur retry
+    } catch (e) { state.leadSig = null; }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
