@@ -169,6 +169,8 @@
       <input id="url" placeholder="yourbusiness.com.au" autocomplete="off">
       <label class="lab">TRADE (optional)</label>
       <input id="trade2" placeholder="e.g. plumber, electrician" autocomplete="off">
+      <label class="lab">LOCATION (optional)</label>
+      <input id="location" placeholder="e.g. Cairns, QLD" autocomplete="off">
       <button class="btn btn-green" onclick="runRoast()">Roast My Website →</button>
       <div class="microcopy" style="margin-top:16px">Find out whether Google and AI can recommend your business.</div>
     </div>
@@ -178,9 +180,9 @@
       <h2 class="scanh">Sizing up your site…</h2>
       <div class="scansub" id="scanFor"></div>
       <div class="scanbox">
-        <div class="scanline on" id="sl0"><span class="sp" id="sp0"></span><span class="sl-t">First impression &amp; clarity</span></div>
-        <div class="scanline" id="sl1"><span class="sp" id="sp1"></span><span class="sl-t">Can it rank on Google?</span></div>
-        <div class="scanline" id="sl2"><span class="sp" id="sp2"></span><span class="sl-t">Mobile, speed &amp; trust</span></div>
+        <div class="scanline on" id="sl0"><span class="sp" id="sp0"></span><span class="sl-t">Message clarity for visitors</span></div>
+        <div class="scanline" id="sl1"><span class="sp" id="sp1"></span><span class="sl-t">Does Google &amp; AI like the content?</span></div>
+        <div class="scanline" id="sl2"><span class="sp" id="sp2"></span><span class="sl-t">Technical overview</span></div>
       </div>
       <div class="foot">Reading your site the way your customers do</div>
     </div>
@@ -190,7 +192,7 @@
       <div id="roastBody"></div>
       <div id="ctaBox" class="ctabox">
         <div class="ct" style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;font-weight:800;color:var(--accent2);margin-top:26px">Want the full fix-list?</div>
-        <div class="cd" style="font-size:19px;font-weight:800;color:var(--ink);line-height:1.35;margin:6px 0 4px">The complete rundown of what's holding your site back — and the plain-English plan to fix it.</div>
+        <div class="cd" style="font-size:19px;font-weight:800;color:var(--ink);line-height:1.35;margin:6px 0 20px">The complete rundown of what's holding your site back — and the plain-English plan to fix it.</div>
         <input id="email" placeholder="Your email" autocomplete="off">
         <button class="btn btn-green" onclick="sendRoast()">Send me the full fix-list</button>
         <div class="microcopy" style="font-size:19px;font-weight:800;color:var(--ink);line-height:1.35;margin-top:14px">Some of this might sting — that's usually where the missed jobs are hiding. The fix-list is free. Grab it, and take a look.</div>
@@ -209,8 +211,9 @@ let STATE={};
 function getRoast(){
   var url=(document.getElementById('url').value||'').trim();
   var trade=(document.getElementById('trade2').value||'').trim();
+  var loc=(document.getElementById('location')&&document.getElementById('location').value||'').trim();
   if(ENDPOINT){
-    var u=ENDPOINT+'?url='+encodeURIComponent(url)+'&trade='+encodeURIComponent(trade);
+    var u=ENDPOINT+'?url='+encodeURIComponent(url)+'&trade='+encodeURIComponent(trade)+'&location='+encodeURIComponent(loc);
     return fetch(u).then(function(r){return r.json();}).then(function(j){
       if(j&&j.ok&&j.result){ STATE=j.result; } else { STATE={_error:true}; }
     }).catch(function(){ STATE={_error:true}; });
@@ -248,7 +251,7 @@ function runRoast(){
       const t=document.createElement('span'); t.className='tick'; t.textContent='✓'; ln.appendChild(t);
       if(i+1<steps.length){document.getElementById('sl'+(i+1)).classList.add('on');}
       seq(i+1);
-    }, 900+Math.random()*600);
+    }, 1700+Math.random()*700);
   };
   seq(0);
 }
@@ -284,6 +287,6 @@ function buildRoast(){
     '<div style="font-size:14px;color:var(--ink);margin:10px 2px 0;line-height:1.55"><b>'+(S.oneLiner||'')+'</b></div>'+
     '';
 }
-function sendRoast(){var email=(document.getElementById('email').value||'').trim();if(!/.+@.+\..+/.test(email)){document.getElementById('email').style.borderColor='var(--bad)';return;}var trade=(document.getElementById('trade2').value||'').trim();var box=document.getElementById('ctaBox');box.innerHTML='<div class="ct">Sending\u2026</div>';var payload={email:email,url:(STATE&&STATE.url)||'',trade:trade,roast:STATE};fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){box.innerHTML='<div style="font-size:19px;font-weight:800;color:var(--accent2);line-height:1.35">Smart move \u2014 on its way. We\u2019ve emailed your website roast to '+email+'.</div><div style="text-align:center;color:var(--mut);font-size:13px;margin-top:16px">(check spam just in case)</div><div style="font-size:19px;font-weight:800;color:var(--success);line-height:1.35;margin-top:16px">Book a call if you want help getting your business seen on Google and AI by potential customers.</div>';}).catch(function(){box.innerHTML='<div class="ct">Hmm, that didn\u2019t send.</div><div class="cd">Give it another go in a moment.</div>';});}</script>
+function sendRoast(){var email=(document.getElementById('email').value||'').trim();if(!/.+@.+\..+/.test(email)){document.getElementById('email').style.borderColor='var(--bad)';return;}var trade=(document.getElementById('trade2').value||'').trim();var box=document.getElementById('ctaBox');box.innerHTML='<div class="ct">Sending\u2026</div>';var location=(document.getElementById('location')&&document.getElementById('location').value||'').trim();var payload={email:email,url:(STATE&&STATE.url)||'',trade:trade,location:location,roast:STATE};fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){box.innerHTML='<div style="font-size:19px;font-weight:800;color:var(--accent2);line-height:1.35;margin-top:24px">Smart move \u2014 on its way. We\u2019ve emailed your website roast to '+email+'.</div><div style="text-align:center;color:var(--mut);font-size:13px;margin-top:16px">(check spam just in case)</div><a href="https://tradieupwebsiteroast.vercel.app/book.html" style="display:inline-block;font-size:19px;font-weight:800;color:var(--success);line-height:1.35;margin-top:16px;text-decoration:underline">Book a call if you want help getting your business seen on Google and AI by potential customers.</a>';}).catch(function(){box.innerHTML='<div class="ct">Hmm, that didn\u2019t send.</div><div class="cd">Give it another go in a moment.</div>';});}</script>
 </body>
 </html>
